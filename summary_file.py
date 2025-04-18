@@ -1,3 +1,4 @@
+# %%
 import torch as t
 from torch import Tensor
 from transformers import PreTrainedTokenizerFast  # type: ignore
@@ -247,7 +248,8 @@ def prepare_features_for_probing(
 ###############################################################################
 if __name__ == "__main__":
     # Example of how to use the functions above to prepare data for probing experiments
-    
+    from pathlib import Path
+    file_path = Path(__file__).parent
     # Set the device
     device = t.device("cuda" if t.cuda.is_available() else "cpu")
     device_str = str(device)
@@ -262,7 +264,7 @@ if __name__ == "__main__":
     
     # Load data
     # Replace 'path/to/data.csv' with the actual path to your dataset
-    df = pd.read_csv('path/to/data.csv')
+    df = pd.read_csv(file_path/'data'/'149_twt_emotion_happiness.csv')
     
     # Create train-test split
     train_df, test_df = train_test_split_df(df, test_size=0.2, seed=42)
@@ -306,3 +308,4 @@ if __name__ == "__main__":
     
     # From here, you can implement your own probe training logic
     # using the extracted features and labels
+# %%
