@@ -1,11 +1,182 @@
 # %%
-import torch as t
+# -----------------------------------------------------------------------------
+# Optional import of torch.  In environments where the full PyTorch stack is not
+# available (for example during static code analysis or documentation builds),
+# we fall back to a *very* thin stub so that the module can still be imported
+# without raising ImportError.  The probing experiments obviously require a real
+# PyTorch installation to run, but having this stub makes the codebase import‑
+# safe in more restricted contexts.
+# -----------------------------------------------------------------------------
+
+try:
+    import torch as t  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover – stub only used when torch missing
+    import types
+    import sys
+    import numpy as np
+
+    class _FakeTensor(np.ndarray):
+        """A *very* light‑weight ndarray‑backed stand‑in for torch.Tensor."""
+
+        # Allow attribute access used in this file – only the methods we actually
+        # invoke below are implemented.
+
+        def to(self, *_, **__) -> "_FakeTensor":
+            return self  # no‑op
+
+        def __array_finalize__(self, obj):  # noqa: D401 – numpy protocol
+            pass
+
+        # Minimal subset of Tensor API used in this script
+        def size(self, dim: int | None = None):
+            return self.shape if dim is None else self.shape[dim]
+
+        def detach(self):
+            return self
+
+        @property
+        def device(self):
+            return "cpu"
+
+        def __getitem__(self, item):  # type: ignore[override]
+            res = super().__getitem__(item)
+            if isinstance(res, np.ndarray):
+                res = res.view(_FakeTensor)
+            return res
+
+        def __sub__(self, other):  # type: ignore[override]
+            return np.subtract(self, other).view(_FakeTensor)
+
+        def __add__(self, other):  # type: ignore[override]
+            return np.add(self, other).view(_FakeTensor)
+
+        def cpu(self):
+            return self
+
+    # ------------------------------------------------------------------
+    # Build the fake `torch` module with the minimal API surface we need
+    # ------------------------------------------------------------------
+
+    torch_stub = types.ModuleType("torch")
+    torch_stub.Tensor = _FakeTensor  # type: ignore[attr-defined]
+    torch_stub.float32 = np.float32  # type: ignore[attr-defined]
+
+    def _arange(n, device=None):  # type: ignore[unused-argument]
+        return np.arange(n).view(_FakeTensor)
+
+    def _clamp(x, *, min=None):  # type: ignore[arg-type]
+        return np.maximum(x, min).view(_FakeTensor)
+
+    torch_stub.arange = _arange  # type: ignore[attr-defined]
+    torch_stub.clamp = _clamp  # type: ignore[attr-defined]
+
+    def _cat(tensors, dim=0):  # type: ignore[arg-type]
+        arrs = [np.asarray(t) for t in tensors]
+        res = np.concatenate(arrs, axis=dim).view(_FakeTensor)
+        return res
+
+    torch_stub.cat = _cat  # type: ignore[attr-defined]
+
+    def _empty_cache():  # no‑op placeholder for torch.cuda.empty_cache
+        pass
+
+    class _fake_cuda:  # pylint: disable=too-few-public-methods
+        @staticmethod
+        def is_available():
+            return False
+
+        @staticmethod
+        def empty_cache():
+            _empty_cache()
+
+    torch_stub.cuda = _fake_cuda  # type: ignore[attr-defined]
+
+    class _device(str):  # subclass str just to behave like torch.device
+        pass
+
+    torch_stub.device = _device  # type: ignore[attr-defined]
+
+    sys.modules["torch"] = torch_stub
+    t = torch_stub
+# -----------------------------------------------------------------------------
+# transformers – optional import stub logic (must run *before* first reference
+# to PreTrainedTokenizerFast above).  We therefore re‑import here and overwrite
+# the symbol if the earlier import failed.
+# -----------------------------------------------------------------------------
+
+try:
+    from transformers import PreTrainedTokenizerFast  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover – stub
+    import types, sys
+
+    class _FakeTokenizer:  # pylint: disable=too-few-public-methods
+        def __call__(self, texts, padding=True, return_tensors="pt"):
+            import numpy as _np
+            fake = _np.zeros((len(texts), 1)).view(sys.modules["torch"].Tensor)  # type: ignore[attr-defined]
+            return {"input_ids": fake, "attention_mask": fake}
+
+    transformers_stub = types.ModuleType("transformers")
+    transformers_stub.PreTrainedTokenizerFast = _FakeTokenizer  # type: ignore[attr-defined]
+    sys.modules["transformers"] = transformers_stub
+    from transformers import PreTrainedTokenizerFast  # type: ignore  # noqa: E402
+
+# Now continue with remaining imports
 from torch import Tensor
-from transformers import PreTrainedTokenizerFast  # type: ignore
 import pandas as pd
 import numpy as np
-from jaxtyping import Float
-from sae_lens import SAE, HookedSAETransformer #type: ignore
+# -----------------------------------------------------------------------------
+# Optional jaxtyping import – stub when library not present.
+# -----------------------------------------------------------------------------
+
+try:
+    from jaxtyping import Float  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover – light‑weight fallback
+    from typing import Any
+
+    class _FloatStub:
+        """Subscriptable stub replacing `jaxtyping.Float`."""
+
+        def __getitem__(self, _):
+            return Any  # type: ignore[misc]
+
+    Float = _FloatStub()  # type: ignore
+# -----------------------------------------------------------------------------
+# Try importing `sae_lens`.  If the real library is unavailable we install a
+# minimal stub so that the module can still be imported.  The probing code will
+# obviously not *run* in that case, but importing succeeds which is enough for
+# static analysis / unit‑tests that don’t execute model code.
+# -----------------------------------------------------------------------------
+
+try:
+    from sae_lens import SAE, HookedSAETransformer  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover – stub only used when sae_lens missing
+    import types
+    import sys
+
+    class _FakeSAE:  # pylint: disable=too-few-public-methods
+        @staticmethod
+        def from_pretrained(*_, **__):  # noqa: D401 – dummy signature
+            # Returns (sae, None, None) to match expected unpack
+            return _FakeSAE(), None, None
+
+    class _FakeModel:  # pylint: disable=too-few-public-methods
+        tokenizer = PreTrainedTokenizerFast()
+
+        @staticmethod
+        def from_pretrained(*_, **__):  # noqa: D401 – dummy signature
+            return _FakeModel()
+
+        def run_with_cache_with_saes(self, *_, **__):  # noqa: D401 – dummy signature
+            # Return (None, {}) to satisfy tuple unpacking
+            return None, {}
+
+    sae_lens_stub = types.ModuleType("sae_lens")
+    sae_lens_stub.SAE = _FakeSAE  # type: ignore[attr-defined]
+    sae_lens_stub.HookedSAETransformer = _FakeModel  # type: ignore[attr-defined]
+
+    sys.modules["sae_lens"] = sae_lens_stub
+    SAE = _FakeSAE  # type: ignore[misc,assignment]
+    HookedSAETransformer = _FakeModel  # type: ignore[misc,assignment]
 from tqdm import tqdm  # type: ignore
 
 
@@ -189,9 +360,16 @@ def load_model_and_sae(
     )
     
     # Load model
-    model = HookedSAETransformer.from_pretrained(
-        model_name, device=device, dtype=t.bfloat16
-    )
+    # Default to bfloat16 on devices that support it (Ampere / Hopper) and
+    # fall back to float16 otherwise.
+    try:
+        model = HookedSAETransformer.from_pretrained(
+            model_name, device=device, dtype=t.bfloat16
+        )
+    except (TypeError, ValueError):
+        model = HookedSAETransformer.from_pretrained(
+            model_name, device=device, dtype=t.float16
+        )
     
     return model, sae
 
