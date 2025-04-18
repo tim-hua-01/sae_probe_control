@@ -310,11 +310,13 @@ def run_single_experiment(
     feat_types = {
         "raw": to_device(train_feats["sae_input"]),
         "sae": to_device(train_feats["sae_acts_post"]),
+        "sae_recons": to_device(train_feats["sae_recons"]),
     }
 
     test_feat_types = {
         "raw": to_device(test_feats["sae_input"]),
         "sae": to_device(test_feats["sae_acts_post"]),
+        "sae_recons": to_device(test_feats["sae_recons"]),
     }
 
     train_labels = t.tensor(train_df["target"].values, device=device, dtype=t.long)
@@ -324,8 +326,15 @@ def run_single_experiment(
     # STANDARD PROBING (full data)
     # ------------------------------------------------------------------
 
+    # Define weight decay values for different feature types
+    weight_decay_map = {
+        "raw": 0.01,
+        "sae": 0.001,  # Less regularization for sparse features
+        "sae_recons": 0.01,
+    }
+
     full_results: dict[str, float] = {}
-    for k in ("raw", "sae"):
+    for k in ("raw", "sae", "sae_recons"):
         print(f"[INFO] Training full‑data probe ({k}) …")
         probe, _ = train_probe(
             feat_types[k],
@@ -334,6 +343,7 @@ def run_single_experiment(
             test_labels,
             epochs=epochs,
             lr=lr,
+            weight_decay=weight_decay_map[k],
         )
         probe.eval()
         with t.no_grad():
@@ -345,17 +355,21 @@ def run_single_experiment(
     # DATA‑SCARCE PROBING
     # ------------------------------------------------------------------
 
-    scarce_results: dict[str, list[tuple[int, float]]] = {"raw": [], "sae": []}
+    scarce_results: dict[str, list[tuple[int, float]]] = {"raw": [], "sae": [], "sae_recons": []}
 
     for train_size in scarce_sizes:
         # Randomly sample subset of training indices
         idx = np.random.RandomState(0).choice(len(train_labels), size=min(train_size, len(train_labels)), replace=False)
         idx_t = t.tensor(idx, device=device, dtype=t.long)
 
-        for k in ("raw", "sae"):
+        print(f"n={train_size:<4d}")
+        for k in ("raw", "sae", "sae_recons"):
             sub_feats = feat_types[k].index_select(0, idx_t)
             sub_labels = train_labels.index_select(0, idx_t)
 
+            # Adjust weight decay based on sample size - stronger regularization for smaller datasets
+            wd_factor = 1.0 if train_size >= 128 else (2.0 if train_size >= 64 else 5.0)
+            
             probe, _ = train_probe(
                 sub_feats,
                 sub_labels,
@@ -363,12 +377,13 @@ def run_single_experiment(
                 test_labels,
                 epochs=epochs,
                 lr=lr,
+                weight_decay=weight_decay_map[k] * wd_factor,  # Scale weight decay by dataset size
             )
             probe.eval()
             with t.no_grad():
                 acc_sc = accuracy(probe(test_feat_types[k]), test_labels)
             scarce_results[k].append((train_size, acc_sc))
-            print(f"        n={train_size:<4d} | {k:3s} acc {acc_sc:.3f}")
+            print(f"    | {k:10s} acc {acc_sc:.3f}")
 
     # Return both result dicts so that the caller can format / report.
     return full_results, scarce_results
@@ -427,6 +442,11 @@ def main() -> None:
     for k, lst in scarce.items():
         accs = ", ".join(f"{n}:{acc:.3f}" for n, acc in lst)
         print(f"    {k}: {accs}")
+        
+    # Print comparison of feature types for data scarcity
+    print("\nComparison by training size:")
+    for i, size in enumerate(args.scarce):
+        print(f"n={size:<4d} | " + " | ".join(f"{k}: {scarce[k][i][1]:.3f}" for k in scarce.keys()))
 
 
 if __name__ == "__main__":
