@@ -364,7 +364,7 @@ def load_model_and_sae(
     # fall back to float16 otherwise.
     try:
         model = HookedSAETransformer.from_pretrained(
-            model_name, device=device, dtype=t.bfloat16
+            model_name, device=device
         )
     except (TypeError, ValueError):
         model = HookedSAETransformer.from_pretrained(

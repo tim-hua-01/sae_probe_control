@@ -317,6 +317,34 @@ def run_single_experiment(
         "sae": to_device(test_feats["sae_acts_post"]),
     }
 
+    # ------------------------------------------------------------------
+    # Feature normalisation (z‑score per feature)
+    # ------------------------------------------------------------------
+    #
+    # The two representations have *very* different statistical properties:
+    #   • raw residual stream activations are approximately zero‑centred with a
+    #     relatively small standard deviation.
+    #   • SAE hidden activations are non‑negative, extremely sparse, and the
+    #     few non‑zero entries can be orders of magnitude larger.
+    #
+    # A vanilla linear probe trained with Adam therefore suffers a huge scale
+    # imbalance: coordinates with larger magnitude dominate the gradient which
+    # in turn makes optimisation unstable and prone to over‑fitting – an
+    # effect that is particularly harmful for the 16k‑dimensional SAE space.
+    #
+    # A simple, *feature‑wise* standardisation largely fixes this issue.  We
+    # compute mean / std only on the training split to avoid information
+    # leakage and reuse the same statistics to transform the test split.
+    # ------------------------------------------------------------------
+
+    for k in ("raw", "sae"):
+        mean = feat_types[k].mean(dim=0, keepdim=True)
+        std = feat_types[k].std(dim=0, keepdim=True)
+        std = t.clamp(std, min=1e-6)  # avoid divide‑by‑zero for completely sparse cols
+
+        feat_types[k] = (feat_types[k] - mean) / std
+        test_feat_types[k] = (test_feat_types[k] - mean) / std
+
     train_labels = t.tensor(train_df["target"].values, device=device, dtype=t.long)
     test_labels = t.tensor(test_df["target"].values, device=device, dtype=t.long)
 
@@ -334,6 +362,7 @@ def run_single_experiment(
             test_labels,
             epochs=epochs,
             lr=lr,
+            weight_decay=1e-4,
         )
         probe.eval()
         with t.no_grad():
@@ -363,6 +392,7 @@ def run_single_experiment(
                 test_labels,
                 epochs=epochs,
                 lr=lr,
+                weight_decay=1e-4,
             )
             probe.eval()
             with t.no_grad():
